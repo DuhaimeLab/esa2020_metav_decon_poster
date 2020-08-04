@@ -1,0 +1,604 @@
+---
+title: 'The pursuit of the perfect viral metagenome:  Decontamination using in vitro
+  and in silico methods'
+author: Rachel N. Cable,G. Eric Bastien, Cecelia A. Batterbee, Fangze Wu, Melissa
+  B. Duhaime
+date: "8/3/2020"
+output: 
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    keep_md: yes
+    number_sections: yes
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+      toc_depth: 3
+editor_options: 
+  chunk_output_type: inline
+---
+<!-- Set global options, install and call in necessary packages to library -->
+
+
+
+
+
+
+
+# Sample metadata
+
+Three ocean water samples were pre-filtered at 40 µm, then 0.22 µm, then flocculated with FeCl3 in the field and filtered onto a 0.45 µm filter. The flocculated < 0.22 µm fraction was resuspended off the filter using an ascorbate buffer. Each resuspension was evenly divided and each aliquot was subjected to one of four treatments:
+
+1. No treatment
+2. DNase I digestion
+3. Chloroform wash
+4. Chloroform wash followed by DNase I digestion
+
+DNA extraction was performed using Promega Wizard PCR Preps DNA Purification Resin and columns. Sequencing libraries were prepared with Swift Biosciences Accel NGS 1S Plus kits and sequenced via Illumina HiSeq 151 bp paired-end sequencing.
+
+# Data processing
+
+## Dereplication
+
+Sequenced libraries were dereplicated using a custom dereplication script. 
+
+## Quality control
+
+Dereplicated libraries were quality controlled, trimmed, and filtered using [BBDuk](https://jgi.doe.gov/data-and-tools/bbtools/bb-tools-user-guide/bbduk-guide/) in the [BBMap](https://sourceforge.net/projects/bbmap/) software package. Example workflow as follows:
+
+```
+bbmap/repair.sh in1=$sampleR1 in2=$sampleR2 out1="repaired_reads/"$sampledir"/repaired_"$r1 out2="repaired_reads/"$sampledir"/repaired_"$r2
+
+bbmap/bbduk.sh in1="repaired_reads/"$sampledir"/repaired_"$r1 in2="repaired_reads/"$sampledir"/repaired_"$r2 out1="adaptertrimmed_reads/"$sampledir"/adaptertrimmed_repaired_"$r1 out2="adaptertrimmed_reads/"$sampledir"/adaptertrimmed_repaired_"$r2  ref=bbmap/resources/adapters.fa stats="adaptertrimmed_reads/"$sampledir"/adaptertrimmed_repaired_dereped_"$sampledir".stats" ktrim=r k=23 mink=11 hdist=1 tpe tbo
+
+bbmap/bbduk.sh in="adaptertrimmed_reads/"$sampledir"/adaptertrimmed_repaired_"$r1 out="tailtrimmed_reads/"$sampledir"/tailtrimmed_adaptertrimmed_repaired_"$r1 ftr=149
+
+bbmap/bbduk.sh in="adaptertrimmed_reads/"$sampledir"/adaptertrimmed_repaired_"$r2 out="tailtrimmed_reads/"$sampledir"/tailtrimmed_adaptertrimmed_repaired_"$r2 ftl=15
+
+bbmap/repair.sh in1="tailtrimmed_reads/"$sampledir"/tailtrimmed_adaptertrimmed_repaired_"$r1 in2="tailtrimmed_reads/"$sampledir"/tailtrimmed_adaptertrimmed_repaired_"$r2 out1="repaired2_reads/"$sampledir"/repaired2_tailtrimmed_adaptertrimmed_repaired_"$r1 out2="repaired2_reads/"$sampledir"/repaired2_tailtrimmed_adaptertrimmed_repaired_"$r2
+
+bbmap/bbduk.sh in1="repaired2_reads/"$sampledir"/repaired2_tailtrimmed_adaptertrimmed_repaired_"$r1 in2="repaired2_reads/"$sampledir"/repaired2_tailtrimmed_adaptertrimmed_repaired_"$r2 out1="qced_reads/"$sampledir"/qced_repaired2_tailtrimmed_adaptertrimmed_repaired_"$r1 out2="qced_reads/"$sampledir"/qced_repaired2_tailtrimmed_adaptertrimmed_repaired_"$r2 stats="qced_reads/"$sampledir"/qced_repaired2_tailtrimmed_adaptertrimmed_repaired_"$sampledir".stats" qtrim=rl trimq=20 maq=20 minlen=40
+```
+
+## Assembly
+
+De novo read assembly was performed using [megahit](https://github.com/voutcn/megahit) with the meta-sensitive preset. Example workflow as follows:
+
+```
+megahit --preset meta-sensitive -1 $sampleR1 -2 $sampleR2 -t 20 -o "assembled_contigs/"$sampledir"/" --out-prefix $rname
+```
+
+## Binning
+
+Assembly binning was performed using [MetaBAT 2](https://bitbucket.org/berkeleylab/metabat/src/master/). Example workflow as follows:
+
+```
+bins=$(echo "binned_contigs/"$sampledir"/"$sampledir)
+
+depth=$(echo "binned_contigs/"$sampledir"/"$sampledir"_depth.txt")
+
+map=$(echo "mapped_reads/"$sampledir"/"$sampledir"_bwa.bam")
+
+
+jgi_summarize_bam_contig_depths --outputDepth $depth $map
+
+metabat2 -i $sampleR1 -a $depth -o $bins -m 2000 -t 18
+```
+
+## Mapping
+
+Reads were mapped to assemblies and bins using [BWA-MEM](http://bio-bwa.sourceforge.net/). Example workflow as follows:
+
+```
+indpref=$(echo "bwa_indexed_assemblies/"$sampledir"/"$sampledir"_index")
+
+ass=$(echo "assembled_contigs/"$sampledir"/"$rname".contigs.fa")
+
+
+bwa index -p $indpref $ass 
+
+bwa mem -t 20 $indpref $sampleR1 $sampleR2 | samtools sort -@20 -o "mapped_reads/"$sampledir"/"$sampledir"_bwa.bam"
+```
+
+# Data classification
+
+Data at each stage of genome assembly was classified as virus or non-virus by one or more classifiers.
+
+## Reads: raw, assembled, binned
+
+Reads were classified using [Centrifuge](https://github.com/infphilo/centrifuge) and a custom-built index, consisting of the most recent [default RefSeq archaea, bacteria, and virus database](http://www.ccb.jhu.edu/software/centrifuge/manual.shtml#building-index-on-all-complete-bacterial-and-viral-genomes), bins from the [Global Ocean Viromes database](https://datacommons.cyverse.org/browse/iplant/home/shared/iVirus/GOV), and marine virus genomes assembled by Beaulaurier et al. 2020, all publicly accessible databases. Example use of Centrifuge is as follows:
+
+```
+centrifuge -f --threads 4 -x abvplus -1 $sample1 -2 $sample2 --report-file "classifications/"$sampledir"/"$sampledir"_reads_centrifuge_report.tsv" -S "classifications/"$sampledir"/"$sampledir"_reads_centrifuge.out" 
+```
+
+
+```r
+## Import the uniquely classified raw read data for each sample,
+# combine into one dataframe with unique hits named by sample
+
+## Create a list of file paths to the centrifuge output files
+
+raw.read.summ.list <- list.files(path = "<pathtodirectory>"
+                             , recursive = TRUE
+                             , pattern = "*report.tsv"
+                             , full.names = TRUE)
+
+## A function for extracting the needed data from each file 
+# and renaming a column by the sample id
+
+read_summ <- function(path){
+  ## Extract the sample id name from the file path
+  id <- unlist(strsplit(path
+                  , split = "/Sample_"
+                  , fixed = TRUE))[2]
+  ## Read in only the taxid and unique read count for each sample
+  # remove taxid's that have no unique read counts
+  # change the counts column name to sample id
+  read.delim(file = path
+             , sep = "\t"
+             , header = TRUE
+             , colClasses = c("NULL"
+                              , "character"
+                              , "NULL"
+                              , "NULL"
+                              , "NULL"
+                              , "numeric"
+                              , "NULL")
+             , comment.char = "") %>%
+  dplyr::filter(., numUniqueReads != 0) %>%
+  dplyr::rename(., !!id := numUniqueReads)
+}
+
+## Read in each centrifuge output file to a list using the read_summ function
+# Join all data by the tax id
+# Replace all NAs (no reads for that sample and taxid) with 0
+
+raw.read.summ <- lapply(raw.read.summ.list
+                 , read_summ) %>%
+  plyr::join_all(., by = "taxID"
+                 , type = "full") %>%
+  dplyr::mutate_if(is.numeric
+                   , dplyr::coalesce, 0) %>%
+  dplyr::mutate(taxID = as.character(taxID))
+
+## Join parsed centrifuge taxonomy file 
+# to the unique raw read count data by taxid
+# but right join, since there are some taxids in the read data
+# that are not in the parsed taxa data file
+
+tax.raw.read <- tibble::as_tibble(cent.ref) %>%
+  dplyr::right_join(.
+                    , tibble::as_tibble(raw.read.summ)
+                    , by = c("node_number" = "taxID"))
+
+## Look for the taxid's that were classified in samples
+# but are not in the parsed file, since I noticed a 4-row difference
+# when doing a full join
+
+tax.raw.read.missing <- tibble::as_tibble(raw.read.summ) %>%
+  dplyr::anti_join(.
+                    , tibble::as_tibble(cent.ref)
+                    , by = c("taxID" = "node_number"))
+
+
+## A function for creating a vector of sample id's from a list of file paths
+
+extract_sampid <- function(path){
+  ## Extract the sample id name from the file path and return a vector of id's
+  unlist(strsplit(path
+              , split = "/Sample_"
+              , fixed = TRUE))[2]
+}
+
+## Create vector of sample id's from the list of file paths
+
+raw.samp.colnames <- unlist(lapply(raw.read.summ.list
+                                    , extract_sampid))
+
+## Make a dataframe of counts by superkindgom for each sample,
+# which requires labeling all of the mismatched taxids to be 
+# classified as "Unknown,"
+# join metadata with total read counts
+# calculate the total number of unclassified reads by subtracting
+# the total number of uniquely classified reads from total reads,
+# and calculate the proportion of all reads classified in each group
+# for plotting
+
+tax.raw.read.counts.wide <- tax.raw.read %>%
+  dplyr::mutate(superkingdom = forcats::fct_explicit_na(superkingdom
+                                           , na_level = "Unknown")) %>%
+  dplyr::group_by(superkingdom) %>%
+  dplyr::summarise_at(raw.samp.colnames
+                      , sum
+                      , na.rm = TRUE) %>%
+  tidyr::pivot_longer(cols = raw.samp.colnames
+                      , names_to = "Submission_ID"
+                      , values_to = "class_reads") %>%
+  tidyr::pivot_wider(.
+                     , names_from = superkingdom
+                     , values_from = class_reads
+                     , names_prefix = "raw_readpair_class_") %>%
+  dplyr::mutate(Submission_ID = as.character(Submission_ID))
+
+## I left this dataframe in wide format so that I could easily
+# add the assembled and binned read data before converting to long format
+
+
+## Now, run the same basic code for assembled reads
+
+assembled.read.summ.list <- list.files(path = "<pathtodirectory>"
+                             , recursive = TRUE
+                             , pattern = "*report.tsv"
+                             , full.names = TRUE)
+
+
+## Repeat the same function for importing files as for raw reads
+# but with different code to extract the sample name
+
+read_summ2 <- function(path){
+  id <- unlist(strsplit(unlist(strsplit(path
+                 , split = "/Sample_"
+                 , fixed = TRUE))[2]
+                 , split = "_bwa"
+                 , fixed = TRUE))[1]
+  read.delim(file = path
+             , sep = "\t"
+             , header = TRUE
+             , colClasses = c("NULL"
+                              , "character"
+                              , "NULL", "NULL"
+                              , "NULL", "numeric"
+                              , "NULL")
+             , comment.char = "") %>%
+  dplyr::filter(., numUniqueReads != 0) %>%
+  dplyr::rename(., !!id := numUniqueReads)
+}
+
+ass.read.summ <- lapply(assembled.read.summ.list
+                 , read_summ2) %>%
+  plyr::join_all(., by = "taxID", type = "full") %>%
+  dplyr::mutate_if(is.numeric ,dplyr::coalesce, 0) %>%
+  dplyr::mutate(taxID = as.character(taxID))
+
+
+tax.ass.read <- tibble::as_tibble(cent.ref) %>%
+  dplyr::right_join(.
+                    , tibble::as_tibble(ass.read.summ)
+                    , by = c("node_number" = "taxID"))
+
+
+tax.ass.read.missing <- tibble::as_tibble(ass.read.summ) %>%
+  dplyr::anti_join(.
+                    , tibble::as_tibble(cent.ref)
+                    , by = c("taxID" = "node_number"))
+
+
+extract_sampid2 <- function(path){
+  ## Extract the sample id name from the file path and return a vector of id's
+  unlist(strsplit(unlist(strsplit(path
+                 , split = "/Sample_"
+                 , fixed = TRUE))[2]
+                 , split = "_bwa"
+                 , fixed = TRUE))[1]
+}
+
+assembled.samp.colnames <- unlist(lapply(assembled.read.summ.list
+                                    , extract_sampid2))
+
+tax.ass.read.counts.wide <- tax.ass.read %>%
+  dplyr::mutate(superkingdom = forcats::fct_explicit_na(superkingdom
+                                           , na_level = "Unknown")) %>%
+  dplyr::group_by(superkingdom) %>%
+  dplyr::summarise_at(assembled.samp.colnames
+                      , sum
+                      , na.rm = TRUE) %>%
+  tidyr::pivot_longer(cols = assembled.samp.colnames
+                      , names_to = "Submission_ID"
+                      , values_to = "class_reads") %>%
+  tidyr::pivot_wider(.
+                     , names_from = superkingdom
+                     , values_from = class_reads
+                     , names_prefix = "assembled_readpair_class_") %>%
+  dplyr::mutate(Submission_ID = as.character(Submission_ID))
+
+## And repeat the same code for binned reads
+
+binned.read.summ.list <- list.files(path = "<pathtodirectory>"
+                                    , recursive = TRUE
+                                    , pattern = "*report.tsv"
+                                    , full.names = TRUE)
+
+binned.read.summ <- lapply(binned.read.summ.list
+                 , read_summ) %>%
+  plyr::join_all(., by = "taxID", type = "full") %>%
+  dplyr::mutate_if(is.numeric ,dplyr::coalesce, 0) %>%
+  dplyr::mutate(taxID = as.character(taxID))
+
+
+tax.binned.read <- tibble::as_tibble(cent.ref) %>%
+  dplyr::right_join(.
+                    , tibble::as_tibble(binned.read.summ)
+                    , by = c("node_number" = "taxID"))
+
+tax.binned.read.missing <- tibble::as_tibble(binned.read.summ) %>%
+  dplyr::anti_join(.
+                    , tibble::as_tibble(cent.ref)
+                    , by = c("taxID" = "node_number"))
+
+
+binned.samp.colnames <- unlist(lapply(binned.read.summ.list
+                                    , extract_sampid))
+
+tax.bin.read.counts.wide <- tax.binned.read %>%
+  dplyr::mutate(superkingdom = forcats::fct_explicit_na(superkingdom
+                                           , na_level = "Unknown")) %>%
+  dplyr::group_by(superkingdom) %>%
+  dplyr::summarise_at(binned.samp.colnames
+                      , sum
+                      , na.rm = TRUE) %>%
+  tidyr::pivot_longer(cols = binned.samp.colnames
+                      , names_to = "Submission_ID"
+                      , values_to = "class_reads") %>%
+  tidyr::pivot_wider(.
+                     , names_from = superkingdom
+                     , values_from = class_reads
+                     , names_prefix = "binned_readpair_class_") 
+
+## Combine the read counts summarized by superkingdom
+# from each data set with 
+# sample metadata
+
+all.read.counts.wide <- sample.metadata.seq.counts %>%
+  dplyr::left_join(tax.raw.read.counts.wide
+                    , by = "Submission_ID") %>%
+  dplyr::left_join(tax.ass.read.counts.wide
+                    , by = "Submission_ID") %>%
+  dplyr::left_join(tax.bin.read.counts.wide
+                    , by = "Submission_ID") %>%
+  dplyr::mutate(raw_readpair_class_tot 
+                = raw_readpair_class_Archaea 
+                + raw_readpair_class_Bacteria 
+                + raw_readpair_class_Viruses 
+                + raw_readpair_class_Unknown
+                , raw_readpair_ratio_vir2ab 
+                = raw_readpair_class_Viruses
+                /(raw_readpair_class_Archaea 
+                  + raw_readpair_class_Bacteria)
+                , assembled_readpair_class_tot 
+                = assembled_readpair_class_Archaea 
+                + assembled_readpair_class_Bacteria 
+                + assembled_readpair_class_Viruses 
+                + assembled_readpair_class_Unknown
+                , assembled_readpair_ratio_vir2ab 
+                = assembled_readpair_class_Viruses
+                /(assembled_readpair_class_Archaea 
+                  + assembled_readpair_class_Bacteria)
+                , binned_readpair_class_tot 
+                = binned_readpair_class_Archaea 
+                + binned_readpair_class_Bacteria 
+                + binned_readpair_class_Viruses 
+                + binned_readpair_class_Unknown
+                , binned_readpair_ratio_vir2ab 
+                = binned_readpair_class_Viruses
+                /(binned_readpair_class_Archaea 
+                  + binned_readpair_class_Bacteria)
+                )
+```
+
+
+```r
+grp2.wizard.read.counts.wide <- read.delim(file = "poster_data/grp2_wizard_read_counts_wide.tsv"
+                                   , sep = "\t"
+                                   , header = TRUE
+                                   , comment.char = "") %>%
+dplyr::mutate(ace_sample = factor(ace_sample
+                                   , levels = c("FECL030"
+                                                , "FECL135"
+                                                , "FECL025"))
+              , prod_level = factor(case_when(ace_sample == "FECL030"
+                                     ~ "Low"
+                                     , ace_sample == "FECL135"
+                                     ~ "Medium"
+                                     , ace_sample == "FECL025"
+                                     ~ "High")
+                                    , levels = c("Low"
+                                                 , "Medium"
+                                                 , "High"))
+              , treatment = factor(treatment
+                                 , levels = c("W"
+                                              , "DW"
+                                              , "CW"
+                                              , "CDW")
+                                   , labels = c("No treatment"
+                                                , "DNase"
+                                                , "Chloroform"
+                                                , "Chloroform\n+ DNase"))
+                                              )
+```
+
+
+```r
+## Convert all read data by superkingdom into long format
+# for plotting
+grp2.wizard.read.counts.long <- grp2.wizard.read.counts.wide %>%
+  tidyr::pivot_longer(cols = c(13:29
+                               , 33:50)
+                      , names_to = c("read_type"
+                                       , ".value")
+                      , names_pattern = "(.*?)_(.*)") %>%
+  dplyr::mutate(read_type = factor(read_type
+                                       , levels = c("raw"
+                                                    , "assembled"
+                                                    , "binned")
+                                   , labels = c("Reads"
+                                                , "Assemblies"
+                                                , "Bins")))
+```
+
+
+```r
+grp2.wizard.pal <- c("royalblue1"
+                     , "mediumblue"
+                     , "midnightblue")
+
+box.col <- "goldenrod1"
+```
+
+
+```r
+ggplot2::ggplot(data = grp2.wizard.read.counts.long
+                , aes(x = treatment
+                      , y = readpair_class_Viruses/readpair_class_tot)) +
+  geom_boxplot(color = box.col
+               , width = 0.45) +
+  geom_point(position = position_dodge(width = 0.4)
+             , size = 2.5
+             , alpha = 0.8
+             , aes(color = prod_level
+                   , shape = prod_level)) +
+  facet_grid(.~read_type) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45
+                                   , hjust = 1
+                                   , size = 9)) +
+  labs(x = NULL
+       , y = "Proportion read pairs virus") +
+  scale_color_manual(values = grp2.wizard.pal
+                     , name = "Station\nproductivity") +
+  scale_shape_discrete(name = "Station\nproductivity")
+```
+
+<img src="cable_esa_2020_poster_files/figure-html/plot-grp2-wizard-vir-prop-1.png" style="display: block; margin: auto;" />
+
+
+```r
+raw.read.lmm <- lmerTest::lmer(readpair_class_Viruses/readpair_class_tot ~ treatment + (1|prod_level)
+               , grp2.wizard.read.counts.long
+              , subset = read_type == "raw")
+```
+
+```
+## Error: Invalid grouping factor specification, prod_level
+```
+
+```r
+summary(raw.read.lmm)
+```
+
+```
+## Error in summary(raw.read.lmm): object 'raw.read.lmm' not found
+```
+
+
+```r
+assembled.read.lmm <- lmerTest::lmer(readpair_class_Viruses/readpair_class_tot ~ treatment + (1|prod_level)
+               , grp2.wizard.read.counts.long
+              , subset = read_type == "assembled")
+```
+
+```
+## Error: Invalid grouping factor specification, prod_level
+```
+
+```r
+summary(assembled.read.lmm)
+```
+
+```
+## Error in summary(assembled.read.lmm): object 'assembled.read.lmm' not found
+```
+
+
+```r
+binned.read.lmm <- lmerTest::lmer(readpair_class_Viruses/readpair_class_tot ~ treatment + (1|prod_level)
+               , grp2.wizard.read.counts.long
+              , subset = read_type == "binned")
+```
+
+```
+## Error: Invalid grouping factor specification, prod_level
+```
+
+```r
+summary(binned.read.lmm)
+```
+
+```
+## Error in summary(binned.read.lmm): object 'binned.read.lmm' not found
+```
+
+
+## Contiguous sequences: assembled and binned
+
+Assemblies were classified as viral by VirSorter and VirFinder. All assemblies were run through both programs, and any assembly classified by either program was labeled as virus. 
+
+
+Example code for VirSorter:
+
+```
+wrapper_phage_contigs_sorter_iPlant.pl --virome -f $sample1 --db 1 --wdir "classifications/virsorter_ace_bins/"$sampledir"/" --ncpu 1 --data-dir /nfs/turbo/lsa-duhaimem/software/virsorter-data
+```
+
+Example code for VirFinder:
+
+```
+# Parsing command line arguments
+args <- commandArgs(trailingOnly = TRUE)
+
+# Variables defined by user
+contigFasta <- args[1]
+outDir <- args[2]
+fprThreshold <- as.numeric(args[3])
+fdrThreshold <- as.numeric(args[4])
+
+
+# Loading dependencies ----------------------------------------------------
+
+library(VirFinder)
+
+
+# Analysis ----------------------------------------------------------------
+
+# Predicting contigs using the model
+contigPred <- VF.pred(contigFasta)
+
+# Estimate q-values (false-discovery rates) based on p-values
+contigPred$qvalue <- VF.qvalue(contigPred$pvalue)
+
+# Filter contigs based on false-discovery rate threshold
+contigPredViral <- contigPred[contigPred$pvalue < fprThreshold & contigPred$qvalue < fdrThreshold,]
+
+# Writing results to output file
+resultsFile1 <- paste0(outDir, "virfinder_results_all.tsv")
+write.table(contigPred, file = resultsFile1,
+            row.names = FALSE, sep = "\t", quote = FALSE)
+
+resultsFile2 <- paste0(outDir, "virfinder_fpr", fprThreshold, "_fdr", fdrThreshold, "_results2.tsv")
+write.table(contigPredViral, file = resultsFile2,
+            row.names = FALSE, sep = "\t", quote = FALSE)
+
+# Creating list of predicted viral contigs
+system(paste0("awk '{if (NR!=1) {print $1}}' ", resultsFile22, " > ", outDir, "virfinder_predicted_contigs2.txt"))
+
+virfinder.R (END)
+```
+
+
+
+
+## References
+
+Li H. and Durbin R. (2010) Fast and accurate long-read alignment with Burrows-Wheeler Transform. Bioinformatics, Epub. [PMID: 20080505]
+
+Kim D, Song L, Breitwieser FP, and Salzberg SL. Centrifuge: rapid and sensitive classification of metagenomic sequences. Genome Research 2016
+
+Roux, Simon, Jennifer R. Brum, Bas E. Dutilh, Shinichi Sunagawa, Melissa B. Duhaime, Alexander Loy, Bonnie T. Poulos et al. "Ecogenomics and potential biogeochemical impacts of globally abundant ocean viruses." Nature 537, no. 7622 (2016): 689-693.
+
+Beaulaurier, John, Elaine Luo, John M. Eppley, Paul Den Uyl, Xiaoguang Dai, Andrew Burger, Daniel J. Turner et al. "Assembly-free single-molecule sequencing recovers complete virus genomes from natural microbial communities." Genome research 30, no. 3 (2020): 437-446.
+
+
+## Acknowledgements
+
+A great big thanks to Jacob Evans for providing technical support at every step and Will Close for providing code to run VirSorter and VirFinder.
